@@ -52,7 +52,7 @@ contract HumanResources is IHumanResources, ReentrancyGuard {
 
     modifier employeeAuth(){
         if (employeeRegister[msg.sender].employedSince == 0 || employeeRegister[msg.sender].terminatedAt != 0){
-            revert EmployeeNotRegistered();
+            revert NotAuthorized();
         }
         _;
     }
@@ -132,7 +132,7 @@ contract HumanResources is IHumanResources, ReentrancyGuard {
         uint256 salaryOwed;
         // If never employed
         if (emp.employedSince == 0){
-            revert EmployeeNotRegistered();
+            revert NotAuthorized();
         }
 
         // Calculate salary owed
@@ -150,6 +150,11 @@ contract HumanResources is IHumanResources, ReentrancyGuard {
             // If terminated, withdraw accruedSalary and reset to 0
             salaryOwed = emp.accruedSalary;
             
+        }
+
+        // If owed no salary, return 
+        if (salaryOwed == 0){
+            return;
         }
 
         

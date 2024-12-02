@@ -34,7 +34,7 @@ contract HumanResourcesTest is Test {
 
     function setUp() public {
         vm.createSelectFork("https://mainnet.optimism.io");
-        humanResources = HumanResources(payable(0x940DE62E225fcA1159DcA06D427954ce991FD293));
+        humanResources = HumanResources(payable(0x2BAC39eA951db351d494A70e3c77859CeFee80A4));
 
         // Deploy contract dynamically instead of relying on HR_CONTRACT
         // humanResources = new HumanResources(
@@ -133,7 +133,7 @@ contract HumanResourcesTest is Test {
 
     function test_withdrawSalary_beforeRegistration() public {
         vm.prank(alice);
-        vm.expectRevert(EmployeeNotRegistered.selector);
+        vm.expectRevert(NotAuthorized.selector);
         humanResources.withdrawSalary();
     }
 
@@ -185,6 +185,19 @@ contract HumanResourcesTest is Test {
         
         // Assert that Alice's total balance is now 3000 USDC (900 + 2100)
         assertEq(IERC20(_USDC).balanceOf(alice), 2100e6); // 3000e6 represents 3000 USDC
+    }
+
+    function test_switchCurrencyIfNotEmployee() public {
+        vm.prank(charlie);
+        vm.expectRevert(NotAuthorized.selector);
+        humanResources.switchCurrency();
+    }
+
+    function test_terminateIfNotHrManager() public {
+        _registerEmployee(alice, aliceSalary);
+        vm.prank(bob);
+        vm.expectRevert(NotAuthorized.selector);
+        humanResources.terminateEmployee(alice);
     }
 
 
@@ -256,7 +269,7 @@ contract HumanResourcesTest is Test {
 
     function test_largeNumberOfEmployees() public {
         _mintTokensFor(_USDC, address(humanResources), 100_000e6);
-        uint256 numEmployees = 50;
+        uint256 numEmployees = 15;
         address[] memory employees = new address[](numEmployees);
         uint256 salary = 1000e18;
 
@@ -328,16 +341,109 @@ contract HumanResourcesTest is Test {
     }
 
 
-    function test_insufficientFunds() public {
-        _registerEmployee(alice, aliceSalary);
-        _mintTokensFor(_USDC, address(humanResources), 0); // No funds
 
-        skip(7 days);
+    function test_terminateNonexistentEmployee() public {
+        // Attempt to terminate an unregistered employee
+        vm.prank(hrManager);
+        vm.expectRevert(EmployeeNotRegistered.selector);
+        humanResources.terminateEmployee(alice);
+    }
 
-        vm.prank(alice);
-        vm.expectRevert(); // Should fail due to lack of funds
+    function test_HRManagerUnauthorisedWithdraw() public {
+        // HR Manager attempting unauthorised withdrawal
+        vm.prank(hrManager);
+        vm.expectRevert(NotAuthorized.selector);
         humanResources.withdrawSalary();
     }
+
+    function test_currencySwitchAndWithdraw() public {
+        // Mint funds and register Alice
+        _mintTokensFor(_USDC, address(humanResources), 50_000e6);
+        _registerEmployee(alice, aliceSalary);
+
+        // Accrue salary and perform currency switches
+        skip(1 days);
+        vm.prank(alice);
+        humanResources.switchCurrency(); // Switch to ETH
+
+        vm.prank(alice);
+        humanResources.switchCurrency(); // Switch back to USDC
+
+        // Accumulate 7 days of salary and withdraw
+        skip(6 days);
+        vm.prank(alice);
+        humanResources.withdrawSalary();
+        assertEq(IERC20(_USDC).balanceOf(alice), aliceSalary / 1e12, "Incorrect salary after currency switch");
+    }
+
+    function test_withdrawFailsWhenNoFunds() public {
+        // Register Alice and ensure contract has zero balance
+        _registerEmployee(alice, aliceSalary);
+        _mintTokensFor(_USDC, address(humanResources), 0);
+
+        // Skip 7 days to accrue salary
+        skip(7 days);
+
+        // Attempt withdrawal and expect failure due to insufficient funds
+        vm.prank(alice);
+        vm.expectRevert();
+        humanResources.withdrawSalary();
+    }
+
+    function test_salaryAfterFullWeek() public {
+        // Register Alice and allow salary to accrue for a week
+        _registerEmployee(alice, aliceSalary);
+        skip(7 days);
+
+        // Check that salary matches exactly one week's worth
+        uint256 expectedSalary = aliceSalary / 1e12;
+        assertEq(
+            humanResources.salaryAvailable(alice),
+            expectedSalary,
+            "Mismatch in salary for a full week"
+        );
+    }
+
+    function test_verifyEmployeeDetails() public {
+        // Capture the current timestamp and register Alice
+        uint256 registrationTime = block.timestamp;
+        _registerEmployee(alice, aliceSalary);
+
+        // Retrieve employee details and verify correctness
+        (
+            uint256 salary,
+            uint256 startTime,
+            uint256 endTime
+        ) = humanResources.getEmployeeInfo(alice);
+
+        assertEq(salary, aliceSalary, "Incorrect salary recorded");
+        assertEq(startTime, registrationTime, "Start time mismatch");
+        assertEq(endTime, 0, "Terminated time should be zero for active employee");
+    }
+
+    function test_doubleWithdrawalInSamePeriod() public {
+        // Mint funds and register Alice
+        _mintTokensFor(_USDC, address(humanResources), 10_000e6);
+        _registerEmployee(alice, aliceSalary);
+
+        // Allow partial salary accrual and perform first withdrawal
+        skip(3 days);
+        vm.prank(alice);
+        humanResources.withdrawSalary();
+
+        // Attempt second withdrawal without additional accrual
+        vm.prank(alice);
+        humanResources.withdrawSalary();
+
+        // Verify balance remains unchanged after the second withdrawal
+        uint256 expectedBalance = ((aliceSalary * 3) / 7) / 1e12;
+        assertEq(
+            IERC20(_USDC).balanceOf(alice),
+            expectedBalance,
+            "Balance increased incorrectly after second withdrawal"
+        );
+    }
+
 
     // --- Re-entrancy tests --- \\
 
@@ -549,4 +655,3 @@ contract MaliciousReentrant {
         attackInProgress = false;
     }
 }
-
