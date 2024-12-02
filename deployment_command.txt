@@ -1,0 +1,1 @@
+forge script scripts/DeployHumanResources.s.sol:DeployHumanResourcesScript --rpc-url $RPC_URL --private-key $PRIV_KEY --broadcast

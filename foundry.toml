@@ -1,0 +1,13 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc_version = "0.8.24"
+evm_version = "paris"   
+
+# Additional solc versions if needed
+extra_solc_versions = ["0.8.20"]
+
+# RPC endpoints
+[profile.default.rpc_endpoints]
+optimism = "https://mainnet.optimism.io" #OP Mainnet

@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.17;
 
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+import {console} from "../lib/forge-std/src/console.sol";
+import "./utils/ReentrancyGuard.sol";
+import "./interfaces/IERC20.sol";
+import "./interfaces/IWETH.sol";
 import {IHumanResources} from "./interfaces/IHumanResources.sol";
 import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
 import {ISwapRouter} from "./interfaces/ISwapRouter.sol";
 
 contract HumanResources is IHumanResources, ReentrancyGuard {
     struct Employee {
-        uint256 weeklyUsdSalary; // Based in USDC
+        uint256 weeklyUsdSalary; // Based in USDC (6 decimals)
         uint256 employedSince;
         uint256 terminatedAt;
-        uint256 withdrawnSalary;
-        uint256 accruedSalary;
+        uint256 withdrawnSalary; // Stored in USDC (6 decimals)
+        uint256 accruedSalary; // Stored in USDC (6 decimals)
         bool isEth; // false = USDC (default) | true = ETH
     }
 
@@ -54,6 +57,9 @@ contract HumanResources is IHumanResources, ReentrancyGuard {
         _;
     }
 
+    receive() external payable {}
+    fallback() external payable {}
+
     /// Registers an employee in the HR system
     function registerEmployee(address employee, uint256 weeklyUsdSalary) external managerAuth {
         Employee storage emp = employeeRegister[employee];
@@ -69,6 +75,7 @@ contract HumanResources is IHumanResources, ReentrancyGuard {
             // Reinstate terminated employee
             emp.employedSince = block.timestamp;
             emp.terminatedAt = 0;
+            emp.weeklyUsdSalary = weeklyUsdSalary;
             
         } else {
             // Already active
@@ -80,6 +87,7 @@ contract HumanResources is IHumanResources, ReentrancyGuard {
 
         activeEmployeeCount += 1;
         emit EmployeeRegistered(employee, weeklyUsdSalary);
+        
     }
 
     // Terminate an employee. Only callable by an HR Manager
@@ -106,6 +114,7 @@ contract HumanResources is IHumanResources, ReentrancyGuard {
 
     // Toggle currency between USDT (0) and ETH (1)
     function switchCurrency() external employeeAuth(){
+        
         Employee storage emp = employeeRegister[msg.sender];
 
         // Withdraw pending salary
@@ -119,14 +128,14 @@ contract HumanResources is IHumanResources, ReentrancyGuard {
 
     function withdrawSalary() public nonReentrant {
         Employee storage emp = employeeRegister[msg.sender];
+        
         uint256 salaryOwed;
         // If never employed
         if (emp.employedSince == 0){
-            revert NotAuthorized(); // ensure this is the correct error to throw. Maybe "EmployeeNotRegistered()"?
+            revert EmployeeNotRegistered();
         }
 
         // Calculate salary owed
-        
         if (emp.terminatedAt == 0){
             // If employed
             salaryOwed = ((block.timestamp - emp.employedSince) * emp.weeklyUsdSalary)/ 7 days - emp.withdrawnSalary;
@@ -134,31 +143,31 @@ contract HumanResources is IHumanResources, ReentrancyGuard {
 
             // Add unclaimed accrued salary from previous employment period(s)
             salaryOwed += emp.accruedSalary;
+        
+
         }
         else {
             // If terminated, withdraw accruedSalary and reset to 0
             salaryOwed = emp.accruedSalary;
             
         }
+
         
-
-        require (salaryOwed > 0, "No salary available to withdraw");
-
         if (emp.isEth){
             // Convert USDC salary owed amount to ETH
-            expectedEth = convertUSDCtoEth(salaryOwed);
+            uint256 expectedEth = convertUSDCtoEth(salaryOwed);
 
             /* Approve the Uniswap router to spend the salary amount in USDC on behalf of 
             this contract (to perform the USDC->ETH Swap) */
-            IERC20(usdc).approve(address(uniswapRouter), salaryOwed);
+            IERC20(usdc).approve(address(uniswapRouter), salaryOwed/1e12);
             ISwapRouter.ExactInputSingleParams memory params = ISwapRouter
                 .ExactInputSingleParams({
                 tokenIn: usdc,
                 tokenOut: weth,
-                fee: 3000, // Fee tier (0.3%)
+                fee: 500, // Fee tier (0.05%)
                 recipient: address(this), // Send the WETH to this contract
                 deadline: block.timestamp + 15,
-                amountIn: salaryOwed, //USDC amount 
+                amountIn: salaryOwed / 1e12, //USDC amount 
                 amountOutMinimum: (expectedEth * 98) / 100, // Allow up to 2% slippage
                 sqrtPriceLimitX96: 0
             });
@@ -166,21 +175,37 @@ contract HumanResources is IHumanResources, ReentrancyGuard {
             // Execute the USDC->WETH Swap using a single LP
             uint256 wethReceived = ISwapRouter(uniswapRouter).exactInputSingle(params);
 
+            // Protect against AMM price manipulation
+            require(
+            wethReceived >= (expectedEth * 98) / 100 &&
+            wethReceived <= (expectedEth * 102) / 100,
+            "AMM price deviates from oracle price"
+        );
             // Convert WETH to ETH and send to employee
             IWETH(weth).withdraw(wethReceived);
+            
             payable(msg.sender).transfer(wethReceived);
 
             salaryOwed = expectedEth;
         }
         else {
             // Transfer USDC to employee
-            IERC20(usdc).transfer(msg.sender, salaryOwed);
+           
+            IERC20(usdc).transfer(msg.sender, salaryOwed/1e12);
+         
         }
-
+        
         // Reset accrued salary now that it has been claimed
         emp.accruedSalary = 0;
-        emit SalaryWithdrawn(msg.sender, emp.isEth, salaryOwed);
+        if (emp.isEth){
+            emit SalaryWithdrawn(msg.sender, emp.isEth, salaryOwed);
+        }
+        else {
+            
+            emit SalaryWithdrawn(msg.sender, emp.isEth, salaryOwed/1e12);
+        }
 
+        
     }
 
     function salaryAvailable(address employee) external view returns (uint256){
@@ -188,9 +213,10 @@ contract HumanResources is IHumanResources, ReentrancyGuard {
         uint256 salaryOwed;
         // If never registered, return 0
         if (emp.employedSince == 0){
+            
             return 0;
         }
-
+        
         // Current employee
         else if (emp.terminatedAt == 0){
             salaryOwed = ((block.timestamp - emp.employedSince) * emp.weeklyUsdSalary)/ 7 days - emp.withdrawnSalary;
@@ -202,12 +228,7 @@ contract HumanResources is IHumanResources, ReentrancyGuard {
         }
         
         // Handle currency preference and return salary available
-        if (emp.isEth){
-            return convertUSDCtoEth(salaryOwed);
-        }
-        else {
-            return salaryOwed;
-        }
+        return emp.isEth ? convertUSDCtoEth(salaryOwed) : salaryOwed/1e12;
     }
 
     // Return address of the HR manager so you can report him to the HR manager manager (HR Final Boss)
@@ -236,14 +257,10 @@ contract HumanResources is IHumanResources, ReentrancyGuard {
         return uint256(price);
     }
 
-    // Find current ETH value of a given USDC amount (Chainlink Oracle)
+    // Find current ETH value of a given (18 decimal) USDC amount (Chainlink Oracle)
     function convertUSDCtoEth(uint256 usdcAmount) private view returns (uint256){
         uint256 ethPrice = getEthPrice(); // ETH price in USD with 8 decimals
-        // Convert usdcAmount from 6 decimals to 18 decimals by multiplying by 1e12
-        uint256 usdcAmountIn18 = usdcAmount * 1e12;
-        // ETH amount in wei = (usdcAmountIn18 * 1e18) / ethPrice
-        // Adjust for ETH price decimals
-        return (usdcAmountIn18 * 1e18) / ethPrice;
+        return (usdcAmount* 1e8)/ethPrice; // Return ETH price 18 decimals
     }
 
 
