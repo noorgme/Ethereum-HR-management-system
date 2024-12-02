@@ -33,8 +33,8 @@ contract HumanResourcesTest is Test {
     uint256 ethPrice;
 
     function setUp() public {
-        vm.createSelectFork(vm.envString("ETH_RPC_URL"));
-        humanResources = HumanResources(payable(vm.envAddress("HR_CONTRACT")));
+        vm.createSelectFork("https://mainnet.optimism.io");
+        humanResources = HumanResources(payable(0x940DE62E225fcA1159DcA06D427954ce991FD293));
 
         // Deploy contract dynamically instead of relying on HR_CONTRACT
         // humanResources = new HumanResources(
